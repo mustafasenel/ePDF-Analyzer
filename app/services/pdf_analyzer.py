@@ -457,13 +457,14 @@ class PDFAnalyzer:
                         "Could not auto-detect document type. Please specify template_id."
                     )
             
-            # Extract sender/recipient blocks (from first page)
-            sender_recipient_blocks = None
+            # Extract invoice header layout (from first page) for LLM processing
+            header_layout = None
             try:
                 with self.reader:
-                    sender_recipient_blocks = self.reader.extract_sender_recipient_blocks(page_num=0)
+                    header_layout = self.reader.extract_invoice_header_layout(page_num=0)
+                    print(f"📄 Header layout extracted: {len(header_layout) if header_layout else 0} chars")
             except Exception as e:
-                print(f"Sender/recipient extraction failed: {e}")
+                print(f"Header layout extraction failed: {e}")
             
             # Extract invoice metadata (from first page)
             invoice_metadata = None
@@ -491,7 +492,7 @@ class PDFAnalyzer:
                 template_id=template_id,
                 text=full_text,
                 tables=tables_for_template,
-                sender_recipient_blocks=sender_recipient_blocks,
+                header_layout=header_layout,
                 invoice_metadata=invoice_metadata
             )
             

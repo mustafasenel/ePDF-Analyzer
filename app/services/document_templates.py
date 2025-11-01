@@ -2,7 +2,7 @@
 Document Templates Service
 
 Manages document templates and structured data extraction.
-Uses Qwen LLM for entity extraction (sender/recipient).
+Uses modular LLM service for entity extraction (sender/recipient).
 """
 
 import re
@@ -11,13 +11,19 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from difflib import SequenceMatcher
 
-# Import LLM extractor (lazy load to avoid startup delay)
+# Import LLM services (lazy load to avoid startup delay)
 try:
-    from .llm_extractor import llm_extractor
-    LLM_AVAILABLE = True
+    from .llm_service import get_llm_service
+    from .invoice_extractor import InvoiceExtractor
+    
+    # Get singleton instance
+    llm_service = get_llm_service()
+    invoice_extractor = InvoiceExtractor(llm_service)
+    LLM_AVAILABLE = llm_service.is_available()
 except Exception as e:
-    print(f"⚠️  LLM extractor not available: {e}")
-    llm_extractor = None
+    print(f"⚠️  LLM services not available: {e}")
+    llm_service = None
+    invoice_extractor = None
     LLM_AVAILABLE = False
 
 
@@ -191,7 +197,7 @@ class DocumentTemplateManager:
         template_id: str, 
         text: str, 
         tables: Optional[List] = None, 
-        sender_recipient_blocks: Optional[Dict] = None,
+        header_layout: Optional[str] = None,
         invoice_metadata: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """
@@ -201,7 +207,7 @@ class DocumentTemplateManager:
             template_id: Template to use
             text: Document text
             tables: Extracted tables
-            sender_recipient_blocks: Dict with sender_blocks and recipient_blocks
+            header_layout: Layout-preserved text from invoice header (for LLM processing)
             invoice_metadata: Invoice metadata (tarih, fatura_no, etc.)
             
         Returns:
@@ -210,7 +216,7 @@ class DocumentTemplateManager:
         print(f"📋 Starting template extraction with template_id: {template_id}")
         print(f"📊 Text length: {len(text) if text else 0}")
         print(f"📊 Tables count: {len(tables) if tables else 0}")
-        print(f"📊 Sender/Recipient blocks: {sender_recipient_blocks is not None}")
+        print(f"📊 Header layout: {header_layout is not None}")
         print(f"📊 Invoice metadata: {invoice_metadata is not None}")
         
         if template_id not in self.templates:
@@ -242,18 +248,29 @@ class DocumentTemplateManager:
             "line_items": None,  # Ürün tablosu
         }
         
-        # Extract sender/recipient raw text from blocks
-        if sender_recipient_blocks:
-            if sender_recipient_blocks.get('sender_blocks'):
-                sender_text = '\n'.join([b['text'] for b in sender_recipient_blocks['sender_blocks']])
-                result["sender"]["raw_text"] = sender_text
+        # Extract sender/recipient using LLM from header layout
+        if header_layout and LLM_AVAILABLE and invoice_extractor:
+            try:
+                print(f"🤖 Extracting sender and recipient with LLM from header layout...")
+                llm_result = invoice_extractor.extract_sender_and_recipient(header_layout)
+                print(f"✅ LLM extraction result: {llm_result}")
                 
-                # VKN/TCKN extraction with intelligent label detection
+                # Store raw layout text
+                result["sender"]["raw_text"] = header_layout
+                result["recipient"]["raw_text"] = header_layout
+                
+                # Extract name, address, tax_office from LLM result
+                result["sender"]["name"] = llm_result["sender"].get("name")
+                result["sender"]["address"] = llm_result["sender"].get("address")
+                result["sender"]["tax_office"] = llm_result["sender"].get("tax_office")
+                
+                result["recipient"]["name"] = llm_result["recipient"].get("name")
+                result["recipient"]["address"] = llm_result["recipient"].get("address")
+                result["recipient"]["tax_office"] = llm_result["recipient"].get("tax_office")
+                
+                # VKN/TCKN extraction from header layout
                 import re
                 
-                # Try label-based extraction first (more accurate)
-                # Handles: "Vergi No : 1234567890", "VKN: 1234567890", "Vergi Numarası 1234567890", etc.
-                # Using \s* for maximum flexibility (handles spaces, tabs, newlines)
                 vkn_patterns = [
                     r'(?i)vergi\s*no\.?\s*[:\-]?\s*(\d{10})',
                     r'(?i)vergi\s*numaras[ıiİI]\.?\s*[:\-]?\s*(\d{10})',
@@ -264,175 +281,52 @@ class DocumentTemplateManager:
                     r'(?i)tax\s*id\.?\s*[:\-]?\s*(\d{10})'
                 ]
                 
+                tckn_patterns = [
+                    r'(?i)tckn\.?\s*[:\-]?\s*(\d{11})',
+                    r'(?i)tc\s+kimlik\s+no\.?\s*[:\-]?\s*(\d{11})',
+                    r'(?i)tc\s+no\.?\s*[:\-]?\s*(\d{11})',
+                    r'(?i)t\.?\s*c\.?\s*kimlik\s+no\.?\s*[:\-]?\s*(\d{11})',
+                    r'(?i)t\.?\s*c\.?\s*no\.?\s*[:\-]?\s*(\d{11})',
+                    r'(?i)kimlik\s+no\.?\s*[:\-]?\s*(\d{11})'
+                ]
+                
+                # Find all VKN/TCKN in header (we'll have 2: sender and recipient)
+                all_vkn = []
+                all_tckn = []
+                
                 for pattern in vkn_patterns:
-                    vkn_match = re.search(pattern, sender_text)
-                    if vkn_match:
-                        vkn = vkn_match.group(1)
-                        print(f"🔍 VKN found for sender (label-based): {vkn}")
-                        result["sender"]["tax_id"] = vkn
+                    all_vkn.extend(re.findall(pattern, header_layout))
+                
+                for pattern in tckn_patterns:
+                    all_tckn.extend(re.findall(pattern, header_layout))
+                
+                # Assign first to sender, second to recipient
+                if all_vkn:
+                    if len(all_vkn) >= 1 and not result["sender"]["tax_id"]:
+                        result["sender"]["tax_id"] = all_vkn[0]
                         result["sender"]["tax_id_type"] = "VKN"
-                        break
-                
-                # Try TCKN with labels
-                if not result["sender"]["tax_id"]:
-                    tckn_patterns = [
-                        r'(?i)tckn\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)tc\s+kimlik\s+no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)tc\s+no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)t\.?\s*c\.?\s*kimlik\s+no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)t\.?\s*c\.?\s*no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)kimlik\s+no\.?\s*[:\-]?\s*(\d{11})'
-                    ]
+                        print(f"🔍 VKN found for sender: {all_vkn[0]}")
                     
-                    for pattern in tckn_patterns:
-                        tckn_match = re.search(pattern, sender_text)
-                        if tckn_match:
-                            result["sender"]["tax_id"] = tckn_match.group(1)
-                            result["sender"]["tax_id_type"] = "TCKN"
-                            break
-                
-                # Fallback: General 10/11 digit search with filtering
-                if not result["sender"]["tax_id"]:
-                    # VKN (10 digits) - check each match individually
-                    for vkn_match in re.finditer(r'\b(\d{10})\b', sender_text):
-                        vkn = vkn_match.group(1)
-                        # Get context around the match (30 chars before and after)
-                        start = max(0, vkn_match.start() - 30)
-                        end = min(len(sender_text), vkn_match.end() + 30)
-                        context = sender_text[start:end].lower()
-                        
-                        # Skip if it's phone, fax, or ETTN
-                        if not any(kw in context for kw in ['tel:', 'telefon', 'fax:', 'gsm', 'ettn']):
-                            result["sender"]["tax_id"] = vkn
-                            result["sender"]["tax_id_type"] = "VKN"
-                            break
-                
-                # TCKN (11 digits) fallback - check each match individually
-                if not result["sender"]["tax_id"]:
-                    for tckn_match in re.finditer(r'\b(\d{11})\b', sender_text):
-                        tckn = tckn_match.group(1)
-                        # Get context
-                        start = max(0, tckn_match.start() - 30)
-                        end = min(len(sender_text), tckn_match.end() + 30)
-                        context = sender_text[start:end].lower()
-                        
-                        # Skip if it's phone or ETTN
-                        if not any(kw in context for kw in ['tel:', 'telefon', 'fax:', 'gsm', 'ettn']):
-                            result["sender"]["tax_id"] = tckn
-                            result["sender"]["tax_id_type"] = "TCKN"
-                            break
-                
-                # Use LLM to extract name, address, tax_office
-                if LLM_AVAILABLE and llm_extractor and sender_text:
-                    try:
-                        print(f"🤖 Extracting sender info with LLM...")
-                        llm_result = llm_extractor.extract_sender_recipient_info(
-                            sender_text,
-                            entity_type="sender"
-                        )
-                        print(f"✅ LLM sender result: {llm_result}")
-                        result["sender"]["name"] = llm_result.get("name")
-                        result["sender"]["address"] = llm_result.get("address")
-                        result["sender"]["tax_office"] = llm_result.get("tax_office")
-                    except Exception as e:
-                        print(f"❌ LLM extraction failed for sender: {type(e).__name__}: {e}")
-                        import traceback
-                        traceback.print_exc()
-            
-            if sender_recipient_blocks.get('recipient_blocks'):
-                recipient_text = '\n'.join([b['text'] for b in sender_recipient_blocks['recipient_blocks']])
-                result["recipient"]["raw_text"] = recipient_text
-                
-                # VKN/TCKN extraction with intelligent label detection
-                import re
-                
-                # Try label-based extraction first (more accurate)
-                # Handles: "Vergi No : 1234567890", "VKN: 1234567890", "Vergi Numarası 1234567890", etc.
-                # Using \s* for maximum flexibility (handles spaces, tabs, newlines)
-                vkn_patterns = [
-                    r'(?i)vergi\s*no\.?\s*[:\-]?\s*(\d{10})',
-                    r'(?i)vergi\s*numaras[ıiİI]\.?\s*[:\-]?\s*(\d{10})',
-                    r'(?i)vkn\.?\s*[:\-]?\s*(\d{10})',
-                    r'(?i)vergi\s*kimlik\s*no\.?\s*[:\-]?\s*(\d{10})',
-                    r'(?i)vergi\s*kimlik\s*numaras[ıiİI]\.?\s*[:\-]?\s*(\d{10})',
-                    r'(?i)tax\s*no\.?\s*[:\-]?\s*(\d{10})',
-                    r'(?i)tax\s*id\.?\s*[:\-]?\s*(\d{10})'
-                ]
-                
-                for pattern in vkn_patterns:
-                    vkn_match = re.search(pattern, recipient_text)
-                    if vkn_match:
-                        vkn = vkn_match.group(1)
-                        print(f"🔍 VKN found for recipient (label-based): {vkn}")
-                        result["recipient"]["tax_id"] = vkn
+                    if len(all_vkn) >= 2 and not result["recipient"]["tax_id"]:
+                        result["recipient"]["tax_id"] = all_vkn[1]
                         result["recipient"]["tax_id_type"] = "VKN"
-                        break
+                        print(f"🔍 VKN found for recipient: {all_vkn[1]}")
                 
-                # Try TCKN with labels
-                if not result["recipient"]["tax_id"]:
-                    tckn_patterns = [
-                        r'(?i)tckn\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)tc\s+kimlik\s+no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)tc\s+no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)t\.?\s*c\.?\s*kimlik\s+no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)t\.?\s*c\.?\s*no\.?\s*[:\-]?\s*(\d{11})',
-                        r'(?i)kimlik\s+no\.?\s*[:\-]?\s*(\d{11})'
-                    ]
+                if all_tckn:
+                    if len(all_tckn) >= 1 and not result["sender"]["tax_id"]:
+                        result["sender"]["tax_id"] = all_tckn[0]
+                        result["sender"]["tax_id_type"] = "TCKN"
+                        print(f"🔍 TCKN found for sender: {all_tckn[0]}")
                     
-                    for pattern in tckn_patterns:
-                        tckn_match = re.search(pattern, recipient_text)
-                        if tckn_match:
-                            result["recipient"]["tax_id"] = tckn_match.group(1)
-                            result["recipient"]["tax_id_type"] = "TCKN"
-                            break
+                    if len(all_tckn) >= 2 and not result["recipient"]["tax_id"]:
+                        result["recipient"]["tax_id"] = all_tckn[1]
+                        result["recipient"]["tax_id_type"] = "TCKN"
+                        print(f"🔍 TCKN found for recipient: {all_tckn[1]}")
                 
-                # Fallback: General 10/11 digit search with filtering
-                if not result["recipient"]["tax_id"]:
-                    # VKN (10 digits) - check each match individually
-                    for vkn_match in re.finditer(r'\b(\d{10})\b', recipient_text):
-                        vkn = vkn_match.group(1)
-                        # Get context around the match
-                        start = max(0, vkn_match.start() - 30)
-                        end = min(len(recipient_text), vkn_match.end() + 30)
-                        context = recipient_text[start:end].lower()
-                        
-                        # Skip if it's phone, fax, or ETTN
-                        if not any(kw in context for kw in ['tel:', 'telefon', 'fax:', 'gsm', 'ettn']):
-                            result["recipient"]["tax_id"] = vkn
-                            result["recipient"]["tax_id_type"] = "VKN"
-                            break
-                
-                # TCKN (11 digits) fallback - check each match individually
-                if not result["recipient"]["tax_id"]:
-                    for tckn_match in re.finditer(r'\b(\d{11})\b', recipient_text):
-                        tckn = tckn_match.group(1)
-                        # Get context
-                        start = max(0, tckn_match.start() - 30)
-                        end = min(len(recipient_text), tckn_match.end() + 30)
-                        context = recipient_text[start:end].lower()
-                        
-                        # Skip if it's phone or ETTN
-                        if not any(kw in context for kw in ['tel:', 'telefon', 'fax:', 'gsm', 'ettn']):
-                            result["recipient"]["tax_id"] = tckn
-                            result["recipient"]["tax_id_type"] = "TCKN"
-                            break
-                
-                # Use LLM to extract name, address, tax_office
-                if LLM_AVAILABLE and llm_extractor and recipient_text:
-                    try:
-                        print(f"🤖 Extracting recipient info with LLM...")
-                        llm_result = llm_extractor.extract_sender_recipient_info(
-                            recipient_text,
-                            entity_type="recipient"
-                        )
-                        print(f"✅ LLM recipient result: {llm_result}")
-                        result["recipient"]["name"] = llm_result.get("name")
-                        result["recipient"]["address"] = llm_result.get("address")
-                        result["recipient"]["tax_office"] = llm_result.get("tax_office")
-                    except Exception as e:
-                        print(f"❌ LLM extraction failed for recipient: {type(e).__name__}: {e}")
-                        import traceback
-                        traceback.print_exc()
+            except Exception as e:
+                print(f"❌ LLM extraction failed: {type(e).__name__}: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Extract key-value pairs for fuzzy matching
         kv_pairs = self._extract_key_value_pairs(text)

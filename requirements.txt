@@ -24,9 +24,10 @@ python-dotenv==1.0.0
 python-magic==0.4.27
 
 # LLM for entity extraction
-transformers==4.45.0
-torch==2.1.0
-accelerate==0.34.0
+transformers
+torch
+torchvision
+accelerate
 sentencepiece==0.1.99
 
 # Image processing

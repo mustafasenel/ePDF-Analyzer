@@ -584,16 +584,19 @@ async def generate_regex(
     Returns: {"pattern": "INV\\d{6}", "explanation": "..."}
     """
     try:
-        from app.services.llm_extractor import llm_extractor
+        from app.services.llm_service import get_llm_service
         
-        if not llm_extractor.model or not llm_extractor.tokenizer:
+        # Get singleton LLM service instance
+        llm_service = get_llm_service()
+        
+        if not llm_service.is_available():
             raise HTTPException(
                 status_code=503,
                 detail="LLM service not available. Regex generation requires LLM model."
             )
         
         # Generate regex using LLM
-        result = llm_extractor.generate_regex(description)
+        result = llm_service.generate_regex(description)
         
         if not result:
             raise HTTPException(

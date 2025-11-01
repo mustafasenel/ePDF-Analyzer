@@ -390,6 +390,100 @@ class PDFReader:
             bytes_size /= 1024.0
         return f"{bytes_size:.1f} PB"
     
+    def extract_invoice_header_layout(self, page_num: int = 0) -> str:
+        """
+        Extract invoice header (top portion) with layout preservation
+        Returns structured text that preserves spatial relationships for LLM processing
+        
+        Args:
+            page_num: Page number (0-indexed)
+            
+        Returns:
+            Layout-preserved text from invoice header
+        """
+        if not self.doc:
+            raise ValueError("PDF not loaded")
+        
+        page = self.doc[page_num]
+        page_height = page.rect.height
+        
+        # Get all text blocks
+        blocks = page.get_text("blocks")
+        text_blocks = []
+        for block in blocks:
+            if block[6] == 0 and block[4].strip():  # text block
+                text_blocks.append({
+                    'x0': block[0],
+                    'y0': block[1],
+                    'x1': block[2],
+                    'y1': block[3],
+                    'text': block[4].strip(),
+                    'center_y': (block[1] + block[3]) / 2
+                })
+        
+        # Sort by Y position
+        sorted_blocks = sorted(text_blocks, key=lambda b: b['y0'])
+        
+        # Find ETTN to determine header boundary
+        ettn_idx = None
+        for i, block in enumerate(sorted_blocks):
+            if 'ettn' in block['text'].lower():
+                ettn_idx = i
+                break
+        
+        # Take blocks before ETTN (or top 40% of page if no ETTN found)
+        if ettn_idx:
+            header_blocks = sorted_blocks[:ettn_idx]
+        else:
+            # Fallback: top 40% of page
+            y_threshold = page_height * 0.4
+            header_blocks = [b for b in sorted_blocks if b['center_y'] < y_threshold]
+        
+        # Filter out obvious noise (logos, very short text)
+        clean_blocks = []
+        for block in header_blocks:
+            text = block['text']
+            text_lower = text.lower()
+            
+            # Skip logos and very short text
+            if any(kw in text_lower for kw in ['e-fatura', 'e-arşiv']):
+                continue
+            if len(text.strip()) < 5:
+                continue
+            
+            clean_blocks.append(block)
+        
+        # Build layout-preserved text
+        if not clean_blocks:
+            return ""
+        
+        # Group blocks by approximate Y position (same line)
+        lines = []
+        current_line = [clean_blocks[0]]
+        y_tolerance = 10  # pixels
+        
+        for block in clean_blocks[1:]:
+            if abs(block['y0'] - current_line[0]['y0']) < y_tolerance:
+                current_line.append(block)
+            else:
+                # Sort current line by X position
+                current_line.sort(key=lambda b: b['x0'])
+                lines.append(current_line)
+                current_line = [block]
+        
+        # Add last line
+        if current_line:
+            current_line.sort(key=lambda b: b['x0'])
+            lines.append(current_line)
+        
+        # Build text with layout
+        layout_text = []
+        for line in lines:
+            line_text = '  '.join([b['text'] for b in line])
+            layout_text.append(line_text)
+        
+        return '\n'.join(layout_text)
+    
     def extract_sender_recipient_blocks(self, page_num: int = 0) -> Dict[str, Any]:
         """
         Extract sender and recipient text blocks from PDF

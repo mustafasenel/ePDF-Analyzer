@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     AUTO_CREATE_FOLDERS: bool = True
     
     # LLM Settings
-    LLM_MODEL_NAME: str = "Qwen/Qwen3-0.6B"  # Options: "Qwen/Qwen3-0.6B" (fast), "Qwen/Qwen2.5-1.5B" (better)
+    LLM_MODEL_NAME: str = "Qwen/Qwen3-VL-2B-Instruct"  # Vision-language model for text and image processing
     LLM_MAX_TOKENS: int = 256
     LLM_TEMPERATURE: float = 0.1
     

@@ -5,7 +5,7 @@ import os # Dosya yolunu kontrol etmek için
 
 # Yerel görsel dosyanızın yolu
 # Lütfen bu yolu kendi dosyanızın gerçek yoluna göre güncelleyin.
-local_image_path = "/Users/senel/Downloads/WhatsApp Image 2025-08-23 at 09.59.20.jpeg"
+local_image_path = "/Users/senel/Downloads/WhatsApp Image 2024-11-10 at 14.05.48.jpeg"
 
 # Dosyanın var olup olmadığını kontrol et
 if not os.path.exists(local_image_path):

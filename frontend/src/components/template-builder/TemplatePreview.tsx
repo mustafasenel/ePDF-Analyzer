@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { JsonHighlight } from '@/components/JsonHighlight'
+import { cleanTemplateForExport } from '@/utils/templateCleaner'
 import type { Template } from '@/types/template'
 
 interface TemplatePreviewProps {
@@ -13,7 +14,9 @@ interface TemplatePreviewProps {
 export function TemplatePreview({ template }: TemplatePreviewProps) {
   const [copied, setCopied] = useState(false)
 
-  const jsonString = JSON.stringify(template, null, 2)
+  // Clean template before showing (remove id, return_as_list)
+  const cleanedTemplate = cleanTemplateForExport(template)
+  const jsonString = JSON.stringify(cleanedTemplate, null, 2)
 
   const handleCopy = () => {
     navigator.clipboard.writeText(jsonString)

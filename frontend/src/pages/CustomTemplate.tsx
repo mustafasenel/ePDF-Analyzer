@@ -10,6 +10,7 @@ import { Loader2, Upload, AlertCircle, Download, RotateCcw, FileJson, FileUp } f
 import { SchemaBuilder } from '@/components/template-builder/SchemaBuilder'
 import { TemplatePreview } from '@/components/template-builder/TemplatePreview'
 import { JsonHighlight } from '@/components/JsonHighlight'
+import { cleanTemplateForExport } from '@/utils/templateCleaner'
 import type { Template, TemplateField } from '@/types/template'
 
 const STORAGE_KEY = 'epdf_custom_template'
@@ -103,7 +104,9 @@ export default function CustomTemplate() {
   }
 
   const handleExportJson = () => {
-    const json = JSON.stringify(template, null, 2)
+    // Clean template before export (remove id, return_as_list)
+    const cleanedTemplate = cleanTemplateForExport(template)
+    const json = JSON.stringify(cleanedTemplate, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
